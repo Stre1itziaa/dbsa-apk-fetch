@@ -1,0 +1,37 @@
+name: fetch-dbsa-apk
+on:
+  workflow_dispatch: {}
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Fetch APK from mirrors
+        run: |
+          set -x
+          mkdir -p out keep
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+          PKG="com.db.coo.secureauthenticator"
+          curl -sSL --retry 2 -A "$UA" -o out/apkpure_apk.bin  "https://d.apkpure.com/b/APK/${PKG}?version=latest" || echo "apkpure apk fail"
+          curl -sSL --retry 2 -A "$UA" -o out/apkpure_xapk.bin "https://d.apkpure.com/b/XAPK/${PKG}?version=latest" || echo "apkpure xapk fail"
+          # apkmonk fallback: parse its page for a direct .apk link
+          curl -sSL -A "$UA" "https://www.apkmonk.com/app/${PKG}/" -o out/apkmonk_page.html || true
+          MONK=$(grep -oE 'https?://[^"]+\.apk' out/apkmonk_page.html | head -1 || true)
+          echo "MONK_URL=$MONK"
+          if [ -n "$MONK" ]; then curl -sSL -A "$UA" -o out/apkmonk.apk "$MONK" || true; fi
+          # keep only files with zip magic "PK"
+          for f in out/apkpure_apk.bin out/apkpure_xapk.bin out/apkmonk.apk; do
+            [ -e "$f" ] || continue
+            magic=$(head -c 2 "$f")
+            if [ "$magic" = "PK" ]; then cp "$f" keep/; else echo "INVALID: $f"; head -c 200 "$f" | tr -d '\0'; echo; fi
+          done
+          echo "=== RESULT ==="
+          ls -la keep/ || true
+          sha256sum keep/* || true
+          for f in keep/*; do echo "--- unzip -l $f ---"; unzip -l "$f" | head -40 || true; done
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbsa-apk
+          path: keep/
+          if-no-files-found: error
