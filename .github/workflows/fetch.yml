@@ -1,6 +1,8 @@
 name: fetch-dbsa-apk
 on:
   workflow_dispatch: {}
+permissions:
+  contents: write
 jobs:
   fetch:
     runs-on: ubuntu-latest
@@ -9,74 +11,33 @@ jobs:
       - name: Fetch
         run: |
           set -x
-          mkdir -p out keep
+          mkdir -p keep
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
           PKG="com.db.coo.secureauthenticator"
-          REFP="https://apkpure.com/"
-
-          # 0) diagnostics: apkpure direct endpoints
-          { curl -sSIL -A "$UA" -e "$REFP" "https://d.apkpure.com/b/XAPK/${PKG}?version=latest" || true; } | head -50 > out/diag.txt
-          { curl -sSIL -A "$UA" -e "$REFP" "https://d.apkpure.net/b/XAPK/${PKG}?version=latest" || true; } | head -50 >> out/diag.txt
-          cat out/diag.txt
-
-          # 1) apkpure: search page -> app page -> embedded urls
-          curl -sSL -A "$UA" "https://apkpure.com/search?q=${PKG}" -o out/pure_search.html || true
-          APP=$(grep -oE '/[a-z0-9%-]+/'"$PKG"'(\?[^"]*)?' out/pure_search.html | head -1)
-          echo "APP=$APP"
-          [ -n "$APP" ] && curl -sSL -A "$UA" "https://apkpure.com${APP}" -o out/pure_app.html || true
-          grep -ohE 'https?://[^"]*apkpure[^"]*' out/pure_app.html 2>/dev/null | grep -E '(apk|xapk|download)' | sort -u > out/urls.txt || true
-          grep -ohE '"(https?:)?//[^"]*\.(apk|xapk)[^"]*"' out/pure_app.html 2>/dev/null | sed 's/"//g' | sort -u >> out/urls.txt || true
-          printf 'https://d.apkpure.net/b/XAPK/%s?version=latest\nhttps://d.apkpure.net/b/APK/%s?version=latest\n' "$PKG" "$PKG" >> out/urls.txt
-          sort -u out/urls.txt -o out/urls.txt
-          n=0
-          while IFS= read -r u; do
-            [ -n "$u" ] || continue
-            n=$((n+1)); curl -sSL --retry 1 -A "$UA" -e "$REFP" -o "out/try_$n.bin" "$u" || true
-            echo "try_$n <= $u"; head -c 4 "out/try_$n.bin" | od -c | head -1
-          done < out/urls.txt
-
-          # 2) apkcombo
-          curl -sSL -A "$UA" "https://apkcombo.com/search/?kw=${PKG}" -o out/combo_search.html || true
-          CAPP=$(grep -oE 'https?://apkcombo.com/[a-z0-9%-]+/'"$PKG"'/?' out/combo_search.html | head -1)
-          echo "CAPP=$CAPP"
-          [ -n "$CAPP" ] && curl -sSL -A "$UA" "$CAPP" -o out/combo_app.html || true
-          grep -ohE '(https?:)?//[^"]*(\.apk|\.xapk)[^"]*' out/combo_app.html 2>/dev/null | sed 's#^//#https://#' | sort -u | head -15 > out/combo_urls.txt || true
-          grep -ohE 'https?://[^"]*apkcombo[^"]*download[^"]*' out/combo_app.html 2>/dev/null | sort -u | head -15 >> out/combo_urls.txt || true
-          sort -u out/combo_urls.txt -o out/combo_urls.txt || true
-          cat out/combo_urls.txt
-          m=100
-          while IFS= read -r u; do
-            [ -n "$u" ] || continue
-            m=$((m+1)); curl -sSL --retry 1 -A "$UA" -e "https://apkcombo.com/" -o "out/try_$m.bin" "$u" || true
-            echo "try_$m <= $u"; head -c 4 "out/try_$m.bin" | od -c | head -1
-          done < out/combo_urls.txt
-
-          # 3) softonic
-          curl -sSL -A "$UA" "https://db-secure-authenticator.en.softonic.com/android" -o out/soft.html || true
-          grep -ohE 'https?://[^"]*(\.apk|download)[^"]*' out/soft.html | grep -i softonic | sort -u | head -10 > out/soft_urls.txt || true
-          cat out/soft_urls.txt
-
-          # 4) Deutsche Bank official: DBSA guide PDF -> links inside
-          curl -sSL -A "$UA" "https://autobahn.db.com/microSite/docs/DBSA_User_Guide_Mobile_App_Activation_v2.pdf" -o out/dbsa_guide.pdf || true
-          grep -aoE 'https?://[a-zA-Z0-9./_?=&%-]+' out/dbsa_guide.pdf 2>/dev/null | sort -u | grep -viE 'adobe|w3\.org|google\.com/store|apple' | head -30 > out/db_links.txt || true
-          cat out/db_links.txt
-
-          # keep valid zip-magic files
-          for f in out/*.bin; do
+          curl -sSL --retry 2 -A "$UA" -e "https://apkpure.com/" -o keep/apkpure_apk.bin  "https://d.apkpure.net/b/APK/${PKG}?version=latest" || true
+          curl -sSL --retry 2 -A "$UA" -e "https://apkpure.com/" -o keep/apkpure_xapk.bin "https://d.apkpure.net/b/XAPK/${PKG}?version=latest" || true
+          # keep only zip-magic
+          for f in keep/*.bin; do
             [ -e "$f" ] || continue
-            if [ "$(head -c2 "$f")" = "PK" ]; then cp "$f" keep/; else echo "INVALID $f"; head -c 300 "$f" | tr -d '\0'; echo; fi
+            [ "$(head -c2 "$f")" = "PK" ] || { echo "INVALID $f"; rm -f "$f"; }
           done
-          echo "=== RESULT ==="; ls -la keep/ || true; sha256sum keep/* || true
-          for f in keep/*; do echo "--- $f ---"; unzip -l "$f" | head -30 || true; done
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: dbsa-dbg
-          path: out/
-          if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: dbsa-apk
-          path: keep/
-          if-no-files-found: ignore
+          # dedupe by sha256
+          cd keep
+          s1=$(sha256sum apkpure_apk.bin 2>/dev/null | cut -d' ' -f1)
+          s2=$(sha256sum apkpure_xapk.bin 2>/dev/null | cut -d' ' -f1)
+          if [ -n "$s1" ] && [ "$s1" = "$s2" ]; then rm -f apkpure_xapk.bin; mv apkpure_apk.bin dbsa_pkg.bin; fi
+          # inspect
+          for f in *.bin; do
+            echo "### FILE: $f"; ls -la "$f"; sha256sum "$f"
+            unzip -l "$f" | head -60
+            echo "--- manifest check ---"; unzip -l "$f" | grep -E "manifest\.json|AndroidManifest\.xml|classes\.dex|\.obb|config\." | head -20 || true
+          done
+      - name: Release upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd keep
+          gh release delete dbsa-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create dbsa-latest *.bin --title "DBSA package $(date -u +%Y%m%dT%H%M%SZ)" --notes "auto-fetch from apkpure mirror, unverified source"
+          gh release view dbsa-latest
